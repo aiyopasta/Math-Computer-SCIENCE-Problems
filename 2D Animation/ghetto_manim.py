@@ -1,9 +1,28 @@
 import numpy as np
 import copy
+from tkinter import *
+from svgpathtools import svg2paths
+from tkinter.font import Font
+from PIL import ImageTk, Image
 
+# Default Window Size
 n = 10
 window_w = int(2.1**n)
 window_h = int(2**n)
+
+# Tkinter Setup
+root = Tk()
+root.title("Cewl Animations :)")
+root.attributes("-topmost", True)
+root.geometry(str(window_w) + "x" + str(window_h))  # window size hardcoded
+w = Canvas(root, width=window_w, height=window_h)
+w.pack()
+
+# Additional Imports (some imports cause problems if imported prior to above lines of code)
+from io import BytesIO
+from matplotlib.mathtext import math_to_image
+import matplotlib
+from matplotlib import pyplot as plt
 
 # Color Palette
 apple_colors = {
@@ -79,7 +98,7 @@ def A_inv(x, y):
 # General Purpose Parametric Shape Class to extend
 class ParamShape:
     def __init__(self, curve, color, fill_p=-1, start=0, stop=1, offset_x=0, offset_y=0, offset_theta=0,
-                 anchor_point_x=0, anchor_point_y=0, offset_sx=1, offset_sy=1):
+                 anchor_point_x=0, anchor_point_y=0, offset_sx=1, offset_sy=1, drawing_point_delta=0.01):
         '''
             curve: a parametric function r: R -> R^2. Must be defined everywhere on t∈[0, 1].
             offset_x, offset_y: initial positional offsets
@@ -111,7 +130,46 @@ class ParamShape:
         self.offset_sxy = np.array([offset_sx, offset_sy])
         self.scale_matrix = self.__scale_matrix__(offset_sx, offset_sy)
 
+        self.drawing_point_delta = drawing_point_delta
+
+        # Additional Params
         self.n_subobjects = 1  # We call the non-group ParamShape a subobject of itself.
+        self.text_array = None
+
+    def add_text(self, text, colors_array, font_family, font_size):
+        '''
+            text: String which is formatted exactly in the following way:
+                  – *ci at the beginning of a substring denotes the color of the entire substring until another
+                    *cj is read, where i and j are indices in colors_array.
+                  - *n anywhere in the string means to begin the rest of the string on a new line
+                  – String in between two $ signs represents a LaTeX script.
+
+                  Example String: '*c0 The *c1 graph *c0 of the function $f(x)=\\sin{\\pi}$ clearly *n matches the
+                                   trajectory of the *c2 pendulum $P$.'
+
+            colors_array: Array consisting of all colors used in the text given. The *ci's in the text call the ith
+                          color in this colors_array.
+            font_family: font name. only applies to non-LaTeX text.
+            font_size: in pt
+            ____
+
+            Method generates a text_array object which is structured in the following way:
+                – Each entry is a tuple (String or PhotoImage, color, location)
+                – First entry is an image if the contents are in LaTeX; otherwise, it'll be a string.
+                – Second entry will be None if first entry contains an image. Otherwise, it'll contain an rgb tuple.
+                – Third entry will be an np.array([loc_x, loc_y]) containing where to place the image or text, based
+                  on the assumption that both will be anchored 'W' in the Tkinter canvas.
+        '''
+
+        assert self.text_array is None
+        self.text_array = []
+
+        chunks = text.split('*')
+        assert chunks[0] == ''
+
+        # TODO: Implement
+        pass
+
 
     # Update Methods
     def translate_step(self, target_x, target_y, ease, t):
@@ -152,11 +210,15 @@ class ParamShape:
     def draw_step(self, target_ubound, ease, t):
         if t == 0:
             self.prior_ubound = self.bounds[1]
-            self.target_fill_p = self.p
+
+            if self.p != -1:
+                self.target_fill_p = self.p
 
         t = ease(t)
         self.bounds[1] = ((1-t)*self.prior_ubound) + (t*target_ubound)
-        self.p = t*self.target_fill_p
+
+        if self.p != -1:
+            self.p = t*self.target_fill_p
 
     def undraw(self, target_lbound, ease, t):
         if t == 0:
@@ -168,11 +230,26 @@ class ParamShape:
     def morph_step(self, target_shape, ease, t):
         assert isinstance(target_shape, ParamShape)
 
+        # Figure out a way to fix method to allow for >1 morphs in succession. Currently throws exception.
         if t == 0:
             self.prior_curve = self.curve
 
         t = ease(t)
         self.curve = lambda x: ((1-t)*self.prior_curve(x)) + (t*target_shape.curve(x))
+
+        self.translate_step(*target_shape.offsets_xy, ease, t)
+        self.rotate_step(target_shape.offset_theta, ease, t)
+        self.scale_step(*target_shape.offset_sxy, ease, t)
+        self.fade_color_step(target_shape.color, ease, t)
+        # self.fade_definition(target_shape.drawing_point_delta, ease, t)
+
+    def fade_definition(self, target_drawing_point_delta, ease, t):
+        if t == 0:
+            self.prior_drawing_point_delta = self.drawing_point_delta
+
+        t = ease(t)
+        self.drawing_point_delta = ((1-t)*self.prior_drawing_point_delta) + (t*target_drawing_point_delta)
+
 
     def fade_color_step(self, target_color, ease, t):
         '''target_color must be in rgb'''
@@ -187,14 +264,45 @@ class ParamShape:
         dg = target_color[2] - self.prior_color[2]
         self.color = int(self.prior_color[0] + (t*dr)), int(self.prior_color[1] + (t*db)), int(self.prior_color[2] + (t*dg))
 
+    def fade_fill_step(self, target_p, ease, t):
+        assert self.p >= 0
+        if t == 0:
+            self.prior_p = self.p
+
+        t = ease(t)
+        self.p = ((1-t)*self.prior_p) + (t*target_p)
+
+    def drop_exit(self, direction, t):
+        '''
+            direction: `up', `down', `left', or `right'
+        '''
+        if t == 0:
+            v_mag = 30.
+            g_mag = 5.
+
+            if direction == 'up':
+                self.v = np.array([0, -v_mag])
+            elif direction == 'down':
+                self.v = np.array([0, v_mag])
+            elif direction == 'left':
+                self.v = np.array([v_mag, 0])
+            elif direction == 'right':
+                self.v = np.array([-v_mag, 0])
+
+            self.a = -g_mag * (self.v / np.linalg.norm(self.v))
+
+        self.v = np.add(self.v, self.a)
+        self.offsets_xy = np.add(self.offsets_xy, self.v)
+
+    def abrupt_removal(self, t):
+        self.bounds = [0, 0]
+
 
     # ... add more methods
 
     # Generating sample points for draw / interpolation
-    def get_drawing_points(self, dt):
-        '''
-            dt: points are sampled from t∈self.bounds at every multiple of this parameter. e.g. dt=0.001
-        '''
+    def get_drawing_points(self):
+        dt = self.drawing_point_delta
 
         points = []
         for t in np.arange(self.bounds[0], self.bounds[1]+dt, dt):
@@ -218,11 +326,13 @@ class ParamShape:
 
 # Primitive shapes
 class Ellipse(ParamShape):
-    def __init__(self, center_x, center_y, a, b, color, fill_p=-1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0):
+    def __init__(self, center_x, center_y, a, b, color, fill_p=-1, start=0, stop=1, rot_theta=0,
+                 anchor_x=0, anchor_y=0, drawing_point_delta=0.01):
         # a, b are parameters of the curve (major / minor axes)
         self.a = a
         self.b = b
-        super().__init__(self.curve, color, fill_p, start, stop, center_x, center_y, rot_theta, anchor_x, anchor_y, 1, 1)
+        super().__init__(self.curve, color, fill_p, start, stop, center_x, center_y, rot_theta, anchor_x, anchor_y,
+                         1, 1, drawing_point_delta=drawing_point_delta)
 
     def curve(self, t):
         t = 2*np.pi*t
@@ -230,35 +340,139 @@ class Ellipse(ParamShape):
 
 
 class Circle(Ellipse):
-    def __init__(self, center_x, center_y, radius, color, fill_p=-1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0):
-        super().__init__(center_x, center_y, radius, radius, color, fill_p, start, stop, rot_theta, anchor_x, anchor_y)
+    def __init__(self, center_x, center_y, radius, color, fill_p=-1, start=0, stop=1, rot_theta=0,
+                 anchor_x=0, anchor_y=0, drawing_point_delta=0.01):
+        self.radius = radius
+        self.center_x = center_x
+        self.center_y = center_y
+        super().__init__(center_x, center_y, radius, radius, color, fill_p, start, stop, rot_theta,
+                         anchor_x, anchor_y, drawing_point_delta=drawing_point_delta)
 
 
 class Rectangle(ParamShape):
-    def __init__(self, topleft_x, topleft_y, botright_x, botright_y, color, fill_p=-1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0):
+    def __init__(self, topleft_x, topleft_y, botright_x, botright_y, color, fill_p=-1, start=0, stop=1, rot_theta=0,
+                 anchor_x=0, anchor_y=0, drawing_point_delta=0.01):
 
         self.center_x = (topleft_x + botright_x) / 2.
         self.center_y = (topleft_y + botright_y) / 2.
         self.length = abs(topleft_x - botright_x)
         self.height = abs(topleft_y - botright_y)
-        super().__init__(self.curve, color, fill_p, start, stop, self.center_x, self.center_y, rot_theta, anchor_x, anchor_y, 1, 1)
+        super().__init__(self.curve, color, fill_p, start, stop, self.center_x, self.center_y, rot_theta,
+                         anchor_x, anchor_y, 1, 1, drawing_point_delta=drawing_point_delta)
 
     def curve(self, t):
         t = 2 * np.pi * t
         sec = lambda x: 1. / np.cos(x)
 
-        # That stupid square problem
         dist = sec(t - (np.pi / 2 * np.floor(2. / np.pi * (t + (np.pi / 4)))))
         return np.array([self.length*np.cos(t)*dist/2, self.height*np.sin(t)*dist/2])
 
+    def get_bbox(self):
+        xmin = self.center_x - self.length/2
+        xmax = self.center_x + self.length/2
+        ymin = self.center_y - self.height/2
+        ymax = self.center_y + self.height/2
+
+        return xmin, xmax, ymin, ymax
+
+    def small_bounce_around(self, screen, t):  # note that this assumes square is tiny
+        pass
+
+
+class Triangle(ParamShape):
+    def __init__(self, center_x, center_y, color, fill_p=-1, start=0, stop=1, rot_theta=0,
+                 anchor_x=0, anchor_y=0, scale_x=1, scale_y=1, drawing_point_delta=0.01):
+        self.scale_x = scale_x
+        self.scale_y = scale_y
+        super().__init__(self.curve, color, fill_p, start, stop, center_x, center_y, rot_theta,
+                         anchor_x, anchor_y, 1, 1, drawing_point_delta=drawing_point_delta)
+
+    def curve(self, t):
+        t = 2 * np.pi * t
+        sec = lambda x: 1. / np.cos(x)
+
+        dist = sec(t - (np.pi / 3) - (2*np.pi/3 * np.floor(3*t / (2*np.pi))))
+        return np.array([self.scale_x*np.cos(t)*dist/2, self.scale_y*np.sin(t)*dist/2])
+
 
 class Cardoid(ParamShape):
-    def __init__(self, color, center_x, center_y, fill_p=-1, scale=1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0):
-        super().__init__(self.curve, color, fill_p, start, stop, center_x, center_y, rot_theta, anchor_x, anchor_y, scale, scale)
+    def __init__(self, color, center_x, center_y, fill_p=-1, scale=1, start=0, stop=1, rot_theta=0,
+                 anchor_x=0, anchor_y=0, drawing_point_delta=0.01):
+        super().__init__(self.curve, color, fill_p, start, stop, center_x, center_y, rot_theta, anchor_x, anchor_y,
+                         scale, scale, drawing_point_delta=drawing_point_delta)
 
     def curve(self, t):
         t = 2*np.pi*t
         return np.array([40*np.cos(t)*(1 - 2*np.cos(t)), 40*np.sin(t)*(1 - 2*np.cos(t))])
+
+class CurvedLine(ParamShape):
+    def __init__(self, x0, y0, x1, y1, color, fill_p=-1, curve_place=1, curve_amount=0, start=0, stop=1,
+                 drawing_point_delta=0.01):
+        '''
+            (x0, y0): point where the parametrized curve starts
+            (x1, y1): point where the parametrized curve stops
+            curve_place: Value between 0 and 1 which dictates which part of the curve is most curved.
+            curve_amount: Number which dictates how much curvature there is.
+                          NOTE: If this number is negative, we curve down. Otherwise, we curve up. 0 means straight line.
+        '''
+
+        self.p1 = np.array([x0, y0])
+        self.p2 = np.array([x1, y1])
+        self.t_k = curve_place
+        self.curve_amount = curve_amount
+        super().__init__(self.curve, color, fill_p, start, stop, offset_x=0, offset_y=0, offset_theta=0,
+                         anchor_point_x=0, anchor_point_y=0, offset_sx=1, offset_sy=1,
+                         drawing_point_delta=drawing_point_delta)
+
+        self.__calculate_p_mid__()
+
+    # Demonstration: https://www.desmos.com/calculator/jk7n16e52a
+    def __calculate_p_mid__(self):
+        # Calculate perpendicular line parametric equation.
+        v = self.p2 - self.p1
+        temp = copy.copy(v)
+
+        r_0 = (v * self.t_k) + self.p1
+        if self.curve_amount >= 0:
+            v[0] = -temp[1]
+            v[1] = temp[0]
+        elif self.curve_amount < 0:
+            v[0] = temp[1]
+            v[1] = -temp[0]
+
+        v = v / np.linalg.norm(self.p2 - self.p1)
+
+        # Calculate third point and Bezier curve.
+        self.p_mid = (abs(self.curve_amount) * v * self.t_k) + r_0
+
+    def curve(self, t):
+        # Calculate third point and Bezier curve.
+        p3 = self.p_mid
+
+        line1 = lambda x: ((1-x)*self.p1) + (x*p3)
+        line2 = lambda x: ((1-x)*p3) + (x*self.p2)
+
+        # Return point on Bezier curve at t.
+        return ((1-t)*line1(t)) + (t*line2(t))
+
+    def curve_angle(self):
+        m = self.p2 - self.p_mid
+        return np.arctan2(m[1], m[0])
+
+    def translate_tip(self, target_tip, ease, t):
+        if t == 0:
+            self.prior_p2 = copy.copy(self.p2)
+
+        t = ease(t)
+        self.p2 = ((1-t)*self.prior_p2) + (t*target_tip)
+        self.__calculate_p_mid__()
+
+    def translate_tail(self, target_tail, ease, t):
+        if t == 0:
+            self.prior_p1 = copy.copy(self.p1)
+
+        t = ease(t)
+        self.p1 = ((1-t)*self.prior_p1) + (t*target_tail)
 
 
 # Animation is a node in a tree structure
@@ -338,12 +552,14 @@ class ParamShapeGroup(ParamShape):
         assert abs(sum(self.draw_time_weights) - 1) < 0.0001
 
         self.shapes = param_shapes
+        draw_deltas = [shape.drawing_point_delta for shape in param_shapes]
+        draw_time_delta = min(draw_deltas) / len(draw_deltas)  # lazy solution
 
         # Note that the `global color' for the entire group is None, as each of the shapes have their own color.
         # TODO: CHANGE THE HARDCODED LIGHTINDIGO TO NONE
         super().__init__(curve=self.curve, color=apple_colors['lightindigo'], start=start, stop=stop, offset_x=global_x, offset_y=global_y,
                          offset_theta=global_theta, anchor_point_x=global_anchor_x, anchor_point_y=global_anchor_y,
-                         offset_sx=global_sx, offset_sy=global_sy)
+                         offset_sx=global_sx, offset_sy=global_sy, drawing_point_delta=draw_time_delta)
 
         self.n_subobjects = len(self.shapes)
 
@@ -381,14 +597,29 @@ class ParamShapeGroup(ParamShape):
 
         return t, anim_slot
 
+    def morph_step(self, target_shape, ease, t):
+        for k, obj in enumerate(self.shapes):
+            obj.morph_step(target_shape, ease, t)
+
+            # if t > 0.99 and k > 0:
+            #     obj.bounds[1] = 0
+
+            # if t > 0.99 and k == 0:
+            #     obj.drawing_point_delta = target_shape.drawing_point_delta
+
+        super().morph_step(target_shape, ease, t)
+
+    def fade_color_step(self, target_color, ease, t):
+        for obj in self.shapes:
+            obj.fade_color_step(target_color, ease, t)
+
     # Generating sample points for draw / interpolation
-    def get_drawing_points(self, dt):
-        '''
-            dt: points are sampled from t∈self.bounds at every multiple of this parameter. e.g. dt=0.001
-        '''
+    def get_drawing_points(self):
+        dt = self.drawing_point_delta
 
         point_set = []
         prev_shape_num = 0
+        prev_subpath_num = 0
         for t in np.arange(self.bounds[0], self.bounds[1]+dt, dt):
             t_prime, curr_shape_num = self.__remapped_t__(min(t, 1))
 
@@ -398,15 +629,244 @@ class ParamShapeGroup(ParamShape):
             # Apply global transformations
             v = np.matmul(self.rot_matrix, np.matmul(self.scale_matrix, v) - self.anchor_point) + self.anchor_point + self.offsets_xy
 
+            # Special Glyph Accommodation
+            curr_subpath_num = 0
+            if isinstance(self.shapes[curr_shape_num], Glyph):
+                curr_subpath_num = self.shapes[curr_shape_num].current_subpath_num
+
+            # Should yield accumulated point_set?
             if prev_shape_num != curr_shape_num or t >= 1:
-                point_set.extend(point_set[0:2])
+                prev_shape = self.shapes[prev_shape_num]
+                if (not isinstance(prev_shape, CurvedLine) and prev_shape.p != -1) or isinstance(prev_shape, Glyph)\
+                        and not prev_shape.morphed:
+                    point_set.extend(point_set[0:2])
+
                 yield prev_shape_num, point_set
                 point_set = [*v]
                 prev_shape_num = curr_shape_num
+                prev_subpath_num = 0
+
+            elif curr_subpath_num != prev_subpath_num:
+                if not self.shapes[prev_shape_num].morphed:
+                    point_set.extend(point_set[0:2])
+                yield curr_shape_num, point_set
+                point_set = [*v]
+                prev_subpath_num = curr_subpath_num
+
             else:
                 point_set.extend(v)
 
         yield prev_shape_num, point_set
+
+
+class Glyph(ParamShape):
+    def __init__(self, character, pseudo_font_size, color, start=0, stop=1, left_x=0, bottom_y=0,
+                 angle=0, anchor_point_x=0, anchor_point_y=0, offset_sx=1, offset_sy=1, drawing_points_delta=0.01):
+        '''
+            character: character to display
+            font_size: size of font
+            n_points: number of points to sample across each svg image path.
+        '''
+
+        # Knuth Computer Modern Font
+        self.letters_map = ['A', 'C', 'G', 'B', 'D', 'E', 'F', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'Q', 'S', 'P',
+                            'R', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'f', 'b', 'd', 'h', 'k', 'l', 'i1', 'j1', 'c',
+                            'g', 's', 'e', 'i2', 'j2', 'm', 'n', 'o', 'p', 'q', 'r', '4', '7', '0', '1', '2', '3', '5',
+                            '6', '8', 't', 'u', 'v', 'w', 'x', 'y', 'z', '[', ']', '\\', '/', '$', '!1', '@', '\'', '#',
+                            '~', '9', '`', ';1', '=1', '-', '=2', ';2', ',', '.', '!2', '%1', '*', '(', ')', '{', '}',
+                            '|', '&', '?1', '"1', '"2', '^', '+', '<', '>', ':1', '%2', ':2', '?2', '_']
+
+        self.character = character
+
+        # Use svg image to extract paths
+        self.paths, _ = svg2paths('/Users/adityaabhyankar/Desktop/knuth.001.svg')
+        self.path = self.paths[self.letters_map.index(self.character)]
+        self.subpaths = self.path.continuous_subpaths()
+
+        self.d = pseudo_font_size
+
+        super().__init__(self.curve, color, fill_p=-1, start=start, stop=stop, offset_x=left_x, offset_y=bottom_y,
+                         offset_theta=angle, anchor_point_x=anchor_point_x, anchor_point_y=anchor_point_y,
+                         offset_sx=offset_sx, offset_sy=offset_sy, drawing_point_delta=drawing_points_delta)
+
+        self.__calculate_possible_extra_offsets__()
+        self.current_subpath_num = 0
+
+        # Create time markers
+        self.time_markers = [1]  # when to move on to drawing the next subpath
+        if len(self.subpaths) > 1:
+            t0 = 0.7
+            self.time_markers = [t0]
+            for i in range(len(self.subpaths) - 1):
+                self.time_markers.append(((1 - t0) / (len(self.subpaths) - 1)) + self.time_markers[-1])
+
+        # Additional Params
+        self.morphed = False
+
+    def __calculate_possible_extra_offsets__(self):
+        xmin, xmax, ymin, ymax = self.path.bbox()
+
+        # Need to tailor these offsets on a character by character basis.
+        extra_offset_x = xmin
+        extra_offset_y = ymin
+
+        if self.character in ['q', 'y', 'p', 'g', 'j2']:
+            extra_offset_y += (ymax - ymin) * 0.3
+
+        if self.character == 'i1':
+            _, _, i_ymin, i_ymax = self.paths[self.letters_map.index('i2')].bbox()
+
+            extra_offset_x -= 30
+            extra_offset_y -= (i_ymax - i_ymin) + 50
+
+        if self.character == 'j1':
+            _, _, j_ymin, j_ymax = self.paths[self.letters_map.index('j2')].bbox()
+
+            extra_offset_x -= 150
+            extra_offset_y -= (j_ymax - j_ymin) + 50
+
+        if self.character == '!1':
+            extra_offset_y -= 200
+
+        if self.character == '\'':
+            extra_offset_x += 70
+            extra_offset_y -= 700
+
+        if self.character == '?1':
+            extra_offset_y -= 250
+
+        if self.character == '?2':
+            extra_offset_x -= 150
+
+        if self.character == '=1':
+            extra_offset_y -= 250 + 270
+
+        if self.character == '=2':
+            extra_offset_y -= 270
+
+        if self.character == ':1':
+            extra_offset_x -= 60
+            extra_offset_y -= 350
+
+        if self.character == ':2':
+            extra_offset_x -= 60
+
+        if self.character == '%1':
+            extra_offset_x -= 60
+
+        if self.character == '%2':
+            extra_offset_x += 200
+
+        self.extra_offset_x = extra_offset_x
+        self.extra_offset_y = extra_offset_y
+
+    def curve(self, t):
+        p = self.subpaths[self.current_subpath_num].point(t)
+        return np.array([(p.real - self.extra_offset_x) / self.d, (p.imag - self.extra_offset_y) / self.d])
+
+    def __remapped_t__(self, t):
+        tm = [0]; tm.extend(self.time_markers)
+        slope = 1. / (tm[self.current_subpath_num + 1] - tm[self.current_subpath_num])
+        yint = -slope * tm[self.current_subpath_num]
+
+        if self.current_subpath_num > 0 and self.morphed:
+            slope = yint = 0
+
+        return (slope * t) + yint
+
+    def morph_step(self, target_shape, ease, t):
+        super().morph_step(target_shape, ease, t)
+
+        if t > 0.45:
+            self.morphed = True
+
+    def get_drawing_points(self):
+        dt = self.drawing_point_delta
+        point_set = []
+
+        self.current_subpath_num = 0
+        for t in np.arange(self.bounds[0], self.bounds[1]+dt, dt):
+            v = self.__get_drawing_point__(min(t, 1))
+            point_set.extend(v)
+
+            if t + dt > self.time_markers[self.current_subpath_num]:
+                # self.current_subpath_num += 1
+                point_set.extend(point_set[0:2])
+                yield point_set
+                point_set = []
+
+        yield point_set
+
+    def __get_drawing_point__(self, t):
+        tm = [0]; tm.extend(self.time_markers)
+        for k, marker in enumerate(tm):
+            if t > marker:
+                self.current_subpath_num = k
+            elif t == 0:
+                self.current_subpath_num = k
+                break
+            else:
+                break
+
+        t_prime = self.__remapped_t__(t)
+        return super().__get_drawing_point__(min(t_prime, 1))
+
+    def get_right_x(self):
+        return ((self.path.bbox()[1] - self.extra_offset_x) / self.d) + self.offsets_xy[0]
+
+
+class Text(ParamShapeGroup):  # implement to include LaTeX too.
+    def __init__(self, text, pseudo_font_size, color, spacing=30, start=0, stop=1, left_x=0, bottom_y=0,
+                 angle=0, anchor_point_x=0, anchor_point_y=0, offset_sx=1, offset_sy=1, drawing_delta_per_glyph=0.01):
+
+        self.text = text
+
+        space_adj = 0
+        glyphs = []
+        for k, char in enumerate(self.__get_char_list__()):
+            if char == ' ':
+                space_adj = spacing * 3
+                continue
+
+            if len(char)==2 and '2' in char:
+                space_adj = -spacing * 3
+
+            x = 0
+            if k != 0:
+                x = glyphs[-1].get_right_x() + spacing + space_adj
+
+            if space_adj != 0:
+                space_adj = 0
+
+            glyph = Glyph(char, pseudo_font_size, color, stop=1, left_x=x, bottom_y=bottom_y,
+                          drawing_points_delta=drawing_delta_per_glyph)
+            glyphs.append(glyph)
+
+        super().__init__(glyphs, start=start, stop=stop, global_x=left_x, global_y=bottom_y, global_theta=angle,
+                         global_anchor_x=anchor_point_x, global_anchor_y=anchor_point_y, global_sx=offset_sx,
+                         global_sy=offset_sy)
+
+    def __get_char_list__(self):
+        char_list = []
+        for i, character in enumerate(self.text):
+            if character == 'i':
+                char_list.extend(['i1', 'i2'])
+            elif character == 'j':
+                char_list.extend(['j1', 'j2'])
+            elif character == '!':
+                char_list.extend(['!1', '!2'])
+            elif character == '=':
+                char_list.extend(['=1', '=2'])
+            elif character == '?':
+                char_list.extend(['?1', '?2'])
+            elif character == '%':
+                char_list.extend(['%1', '%2'])
+            elif character == ':':
+                char_list.extend([':1', ':2'])
+            else:
+                char_list.append(character)
+
+        return char_list
 
 
 # Animation Tree Class
@@ -470,7 +930,7 @@ class Animator:
 
         self.current_frame += 1
 
-    # Sh*tty Priority Queue Implementation class
+    # Bad Priority Queue Implementation class
     class AnimationQueue:  # min-heap structure for maintaining sorted list of waiting animations
         '''
             Priority queue for animations waiting to be played next. Implemented by min-heap,
@@ -714,19 +1174,41 @@ class Animator:
 class Painter:
     def __init__(self, canvas, objects):
         self.w = canvas
-        self.objects = objects
-        self.first_runs = [[True for _ in range(obj.n_subobjects)] for obj in objects]
+        # self.w.configure(background='black')
 
+        self.objects = objects[:]
+
+        self.first_runs = []
+        for obj in objects:
+            sublist = []
+            if isinstance(obj, Text):
+                for glyph in obj.shapes:
+                    sublist.extend([True] * len(glyph.subpaths))
+            elif isinstance(obj, Glyph):
+                sublist.extend([True]*len(obj.subpaths))
+            elif hasattr(obj, 'vx'):  # If it is a DVDLogoObject
+                sublist.extend([True]*3)
+            else:
+                sublist = [True]*obj.n_subobjects
+
+            self.first_runs.append(sublist)
+
+        self.w.create_rectangle(0,0,window_w,window_h, fill='black')
+
+    # TODO: Implement painting for arbitrarily nested ParamShapeGroup objects.
     def paint_step(self):
         w = self.w
 
         for i, obj in enumerate(self.objects):
-            for j, point_set in enumerate(obj.get_drawing_points(0.01)):
+            for j, point_set in enumerate(obj.get_drawing_points()):
                 shape = obj
                 points = point_set
                 if isinstance(obj, ParamShapeGroup):  # reason we don't use n_subobjects here is bc if there's just
                     shape = obj.shapes[point_set[0]]  # 1 object in the group, it won't get colored then as we'll think
-                    points = point_set[1]  # its just a single ParamShape and not a ParamShapeGroup.
+                    points = point_set[1]             # its just a single ParamShape and not a ParamShapeGroup.
+
+                if shape.bounds == [0, 0] and len(points) < 4:
+                    points = [0]*4
 
                 if len(points) >= 4:
                     if self.first_runs[i][j]:
@@ -734,13 +1216,21 @@ class Painter:
 
                         if shape.p >= 0:
                             fill_color = change_color_intensity(shape.color, shape.p)
+
+                            if hasattr(obj, 'vx') and j == 2:
+                                fill_color = (0, 0, 0)
+
                             w.create_polygon(*A_many(points), fill=__from_rgb__(fill_color), smooth=0, width=2,
                                              tag='shape' + str(i) + str(j))
+
                         w.create_line(*A_many(points), fill=__from_rgb__(shape.color), smooth=0, width=2,
                                       tag='boundary' + str(i) + str(j))
                     else:
                         if shape.p >= 0:
                             fill_color = change_color_intensity(shape.color, shape.p)
+                            if hasattr(obj, 'vx') and j == 2:
+                                fill_color = (0, 0, 0)
+
                             poly = w.find_withtag('shape' + str(i) + str(j))
                             w.itemconfig(poly, fill=__from_rgb__(fill_color))
                             w.coords(poly, *A_many(points))
@@ -749,4 +1239,5 @@ class Painter:
                         w.itemconfig(line, fill=__from_rgb__(shape.color))
                         w.coords(line, *A_many(points))
 
+        # print(self.first_runs)
         w.update()

@@ -19,7 +19,7 @@ class Application(tk.Frame):
         buffer = BytesIO()
 
         # Writing png image with our rendered greek alpha to buffer
-        math_to_image('$\\int_C \\vec{F}\\cdot \\vec{dr}\\int_C \\vec{F}\\cdot \\vec{dr}\\int_C \\vec{F}\\cdot \\vec{dr}$', buffer, dpi=1000, format='png')
+        math_to_image('$\\int_C \\vec{F}\\cdot \\vec{dr}$', buffer, dpi=1000, format='png')
 
         # Remoting bufeer to 0, so that we can read from it
         buffer.seek(0)

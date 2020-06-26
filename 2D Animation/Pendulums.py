@@ -1,19 +1,8 @@
 from ghetto_manim import *
-from ghetto_manim import __from_rgb__
-from tkinter import *
 import time
 
 # Suppress scientific notation
 np.set_printoptions(suppress=True)
-
-# Tkinter Setup
-root = Tk()
-root.title("Cewl Animations :)")
-root.attributes("-topmost", True)
-root.geometry(str(window_w) + "x" + str(window_h))  # window size hardcoded
-w = Canvas(root, width=window_w, height=window_h)
-w.pack()
-
 
 # Special Shape Classes
 
@@ -39,8 +28,10 @@ class CircleGroup(ParamShapeGroup):
 class Pendulum(ParamShapeGroup):
     def __init__(self, pos_x, pos_y, length, g, init_theta, rod_color, bob_color):
         # Remember again: `stop' has a different meaning for subobjects in a group. See CircleGroup class.
-        rod = Rectangle(-5, length/2, 5, -length/2, rod_color, fill_p=0.2, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=length/2)
-        bob = Circle(0, -length/2, 30, bob_color, fill_p=0.1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0)
+        rod = Rectangle(-5, length/2, 5, -length/2, rod_color, fill_p=0.2, start=0, stop=1, rot_theta=0,
+                        anchor_x=0, anchor_y=length/2, drawing_point_delta=0.02)
+        bob = Circle(0, -length/2, 30, bob_color, fill_p=0.1, start=0, stop=1, rot_theta=0, anchor_x=0, anchor_y=0,
+                     drawing_point_delta=0.02)
         super().__init__([rod, bob], start=0, stop=0, global_x=pos_x, global_y=pos_y, global_theta=init_theta,
                          global_anchor_x=0, global_anchor_y=length/2)
 
@@ -58,15 +49,14 @@ class Pendulum(ParamShapeGroup):
 
 
 # Time step
-dt = 0.0005
-
+dt = 0.01
 
 def scene1():
     # Object Creation
     objects = []
     n = 3
     for i in range(n):
-        p = Pendulum((-window_w / 2) + (((i + 1) / (n + 1)) * window_w), 0, length=250, g=i + 1, init_theta=np.pi / 4,
+        p = Pendulum((-window_w / 2) + (((i + 1) / (n + 1)) * window_w), 0, length=200, g=(i+1), init_theta=np.pi / 4,
                      rod_color=apple_colors['lightorange'], bob_color=apple_colors['lightteal'])
         objects.append(p)
 
@@ -87,7 +77,6 @@ def scene1():
 
     #  Play em'! ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
     while True:
-        w.configure(background='black')
         animator.update_step()
         da_Vinci.paint_step()
 
@@ -98,26 +87,31 @@ def scene2():
     r = 100
     fake_rect = Rectangle(-r, r, r, -r, color=apple_colors['darkpurple'], stop=0)
     real_rect = Rectangle(-r, r, r, -r, color=(0, 0, 0), stop=0)
-    circle = Circle(0, 0, r, color=apple_colors['lightindigo'], stop=0)
+    circle = Circle(-350, 0, r, color=apple_colors['lightindigo'], stop=0)
+    triangle = Triangle(0, 300, apple_colors['lightyellow'], 0.1, stop=0, scale_x=100, scale_y=100, rot_theta=-np.pi/6)
 
-    pendulum = Pendulum(300, 0, 200, 3, np.pi/6, apple_colors['lightgreen'], apple_colors['lightred'])
-    objects = [real_rect, fake_rect, circle, pendulum]
+    shubadha = Pendulum(300, 0, 200, 3, np.pi/6, apple_colors['lightgreen'], apple_colors['lightred'])
+    objects = [real_rect, fake_rect, circle, shubadha, triangle]
 
     # Animation Tree Construction
     animator = Animator()
     empty_anim = animator.get_root()
+
+    draw_circ = animator.add_animation(circle.draw_step, [1, smooth], duration=20, parent_animation=empty_anim, delay=0)
 
     fade_in =  animator.add_animation(real_rect.fade_color_step, [apple_colors['lightred'], smooth], duration=10, parent_animation=empty_anim, delay=0)
     draw_real = animator.add_animation(real_rect.draw_step, [1, smooth], duration=25, parent_animation=empty_anim, delay=0)
     draw = animator.add_animation(fake_rect.draw_step, [1, smooth], duration=35, parent_animation=draw_real, delay=10)
     undraw = animator.add_animation(fake_rect.undraw, [1, smooth], duration=30, parent_animation=draw_real, delay=25)
 
-    morph = animator.add_animation(real_rect.morph_step, [circle, smooth], duration=20, parent_animation=undraw, delay=10)
+    morph = animator.add_animation(real_rect.morph_step, [triangle, smooth], duration=40, parent_animation=undraw, delay=10)
     flip = animator.add_animation(real_rect.scale_step, [-1, 1, smooth], duration=20, parent_animation=undraw, delay=10)
     fade_indigo = animator.add_animation(real_rect.fade_color_step, [apple_colors['lightindigo'], smooth], duration=15, parent_animation=undraw, delay=5)
 
-    draw_pend = animator.add_animation(pendulum.draw_step, [1, smooth], duration=25, parent_animation=fade_indigo, delay=5)
-    swing = animator.add_animation(pendulum.swing_step, [], duration=200, parent_animation=draw_pend, delay=5)
+    draw_pend = animator.add_animation(shubadha.draw_step, [1, smooth], duration=25, parent_animation=fade_indigo, delay=5)
+    swing = animator.add_animation(shubadha.swing_step, [], duration=100, parent_animation=draw_pend, delay=5)
+
+    drop_dead = animator.add_animation(shubadha.drop_exit, ['down'], duration=20, parent_animation=fade_indigo, delay=100)
 
     # ... add more animations
 
@@ -125,18 +119,15 @@ def scene2():
 
     # Run Scene!
     while True:
-        w.configure(background='black')
-
         animator.update_step()
         picasso.paint_step()
-
         time.sleep(dt)
 
 
 # Main function
 if __name__ == '__main__':
-    # scene1()
-    scene2()
+    scene1()
+    # scene2()
 
 # Necessary line for Tkinter
 mainloop()

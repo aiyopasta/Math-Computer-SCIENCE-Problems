@@ -440,6 +440,9 @@ class ParamShape:
         self.offset_sxy = np.array([offset_sx, offset_sy])
         self.scale_matrix = self.__scale_matrix__(offset_sx, offset_sy)
 
+        # for drop_exit animation
+        self.gravity = np.array([0, -3])
+
     # Update Methods
     def translate_step(self, target_x, target_y, ease, t):
         '''
@@ -501,6 +504,25 @@ class ParamShape:
         db = target_color[1] - self.prior_color[1]
         dg = target_color[2] - self.prior_color[2]
         self.color = int(self.prior_color[0] + (t*dr)), int(self.prior_color[1] + (t*db)), int(self.prior_color[2] + (t*dg))
+
+    def drop_exit(self, direction, t):
+        '''
+            direction: `up', `down', `left', or `right'
+        '''
+        if t == 0:
+            v_mag = 3
+
+            if direction == 'up':
+                self.v = np.array([0, -v_mag])
+            elif direction == 'down':
+                self.v = np.array([0, v_mag])
+            elif direction == 'left':
+                self.v = np.array([v_mag, 0])
+            elif direction == 'right':
+                self.v = np.array([-v_mag, 0])
+
+        self.v += self.gravity
+        self.offsets_xy += self.v
 
 
     # ... add more methods
